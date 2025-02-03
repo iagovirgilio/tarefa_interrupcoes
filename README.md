@@ -57,6 +57,10 @@ A exibição na matriz mostra dígitos de 0 a 9, com padrões invertidos vertica
  - Pressione os botões A e B para alternar os dígitos exibidos na matriz.
  - O LED RGN (canal vermelho, GPIO 13) deverá piscar, confirmando que o timer está ativo.
 
+## Demonstração no YouTube
+
+Confira a demonstração completa deste projeto no YouTube: [Demonstração do Projeto]( https://youtube.com/shorts/B9CQdJD1834?si=GK2yo7ibDDhgPFT2 )
+
 ## Licença
 
 Este projeto está licenciado sob a [MIT License](LICENSE).
