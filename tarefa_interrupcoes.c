@@ -4,6 +4,7 @@
 #include "hardware/irq.h"
 #include "hardware/timer.h"
 #include "hardware/pio.h"
+#include "hardware/pwm.h"    // Adicionado para suporte a PWM
 #include "ws2812.pio.h"
 
 #define IS_RGBW false
@@ -22,11 +23,10 @@ uint8_t led_r = 0;   // vermelho
 uint8_t led_g = 0;   // verde
 uint8_t led_b = 20;  // azul – intensidade baixa, por exemplo
 
-// Buffer que define quais LEDs estão ligados (1) ou desligados (0)
+// Buffer que define quais LEDs estão ligados (true) ou desligados (false)
 bool led_buffer[NUM_PIXELS];
 
 // Padrões para os dígitos de 0 a 9 em uma matriz 5x5  
-// Cada padrão é representado por 25 valores booleanos (linha a linha)
 static const bool digit_patterns[10][NUM_PIXELS] = {
     // 0
     {
@@ -124,9 +124,12 @@ static PIO ws2812_pio = pio0;
 static uint ws2812_sm = 0;
 static uint ws2812_offset;
 
+/* Variável global para o PWM do LED no pino 13 */
+uint red_led_slice;
+
 /* --- Funções para o controle da matriz WS2812 --- */
 
-// Função para enviar um pixel via PIO (semelhante ao exemplo original)
+// Função para enviar um pixel via PIO
 static inline void put_pixel(uint32_t pixel_grb) {
     pio_sm_put_blocking(ws2812_pio, ws2812_sm, pixel_grb << 8u);
 }
@@ -138,8 +141,7 @@ static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
 
 // Função que envia o buffer para a matriz, aplicando cor nos LEDs ativos
 void set_matrix_leds(uint8_t r, uint8_t g, uint8_t b) {
-    // Aplica um fator de brilho, se necessário (aqui, 10% da intensidade máxima)
-    const float brightness = 0.1f;
+    const float brightness = 0.1f;  // 10% da intensidade máxima
     r = (uint8_t)(r * brightness);
     g = (uint8_t)(g * brightness);
     b = (uint8_t)(b * brightness);
@@ -147,19 +149,18 @@ void set_matrix_leds(uint8_t r, uint8_t g, uint8_t b) {
     uint32_t color = urgb_u32(r, g, b);
     for (int i = 0; i < NUM_PIXELS; i++) {
         if (led_buffer[i])
-            put_pixel(color);  // LED ligado
+            put_pixel(color);
         else
-            put_pixel(0);      // LED desligado
+            put_pixel(0);
     }
 }
 
 // Atualiza o buffer global "led_buffer" com o padrão do dígito e envia para a matriz
-// Aqui, o padrão é invertido verticalmente (linha 0 torna-se linha 4, etc.)
+// O padrão é invertido verticalmente (linha 0 passa a ser linha 4, etc.)
 void update_matrix_display(int digit) {
     if (digit < 0 || digit > 9) return;
     for (int row = 0; row < 5; row++) {
         for (int col = 0; col < 5; col++) {
-            // Inverte verticalmente: a linha 'row' do buffer recebe a linha (4 - row) do padrão
             led_buffer[row * 5 + col] = digit_patterns[digit][(4 - row) * 5 + col];
         }
     }
@@ -170,7 +171,7 @@ void update_matrix_display(int digit) {
 void gpio_callback(uint gpio, uint32_t events) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
     if (gpio == BUTTON_A_PIN) {
-        bool level = gpio_get(BUTTON_A_PIN); // true = solto, false = pressionado
+        bool level = gpio_get(BUTTON_A_PIN);
         if (!level && !button_A_pressed && (now - last_debounce_A >= DEBOUNCE_DELAY_MS)) {
             button_A_pressed = true;
             last_debounce_A = now;
@@ -181,11 +182,10 @@ void gpio_callback(uint gpio, uint32_t events) {
             button_A_pressed = false;
         }
     } else if (gpio == BUTTON_B_PIN) {
-        bool level = gpio_get(BUTTON_B_PIN); // true = solto, false = pressionado
+        bool level = gpio_get(BUTTON_B_PIN);
         if (!level && !button_B_pressed && (now - last_debounce_B >= DEBOUNCE_DELAY_MS)) {
             button_B_pressed = true;
             last_debounce_B = now;
-            // Decrementa de forma cíclica: se 0, vai para 9
             current_digit = (current_digit + 9) % 10;
             update_matrix_display(current_digit);
             printf("Botão B pressionado. Dígito: %d\n", current_digit);
@@ -195,11 +195,17 @@ void gpio_callback(uint gpio, uint32_t events) {
     }
 }
 
-/* --- Função de callback do timer --- */
+/* --- Função de callback do timer (PWM para o LED no pino 13) --- */
 bool repeating_timer_callback(struct repeating_timer *t) {
-    static bool red_led_state = false;
-    red_led_state = !red_led_state;
-    gpio_put(RED_LED_PIN, red_led_state);
+    static bool led_on = false;
+    led_on = !led_on;
+    uint channel = pwm_gpio_to_channel(RED_LED_PIN);
+    if (led_on) {
+        // Define um duty cycle baixo (10% do valor máximo: 100 em 1000)
+        pwm_set_chan_level(red_led_slice, channel, 100);
+    } else {
+        pwm_set_chan_level(red_led_slice, channel, 0);
+    }
     return true;
 }
 
@@ -222,13 +228,15 @@ int main() {
     gpio_set_dir(BUTTON_B_PIN, GPIO_IN);
     gpio_pull_up(BUTTON_B_PIN);
 
-    // Configura interrupções para os botões (borda de subida e descida)
+    // Configura interrupções para os botões (bordas de subida e descida)
     gpio_set_irq_enabled_with_callback(BUTTON_A_PIN, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, gpio_callback);
     gpio_set_irq_enabled(BUTTON_B_PIN, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true);
 
-    // Configuração do LED RGB
-    gpio_init(RED_LED_PIN);
-    gpio_set_dir(RED_LED_PIN, GPIO_OUT);
+    // Configuração do LED RGB usando PWM no pino 13
+    gpio_set_function(RED_LED_PIN, GPIO_FUNC_PWM);
+    red_led_slice = pwm_gpio_to_slice_num(RED_LED_PIN);
+    pwm_set_wrap(red_led_slice, 1000); // Define a resolução (0 a 1000)
+    pwm_set_enabled(red_led_slice, true); // Habilita o slice PWM
 
     // Inicializa a matriz de LEDs WS2812
     ws2812_init(WS2812_PIN);
@@ -236,7 +244,7 @@ int main() {
     // Exibe inicialmente o dígito 0
     update_matrix_display(current_digit);
 
-    // Configuração do timer para piscar o LED RGB
+    // Configura o timer para piscar o LED RGB (via PWM)
     struct repeating_timer timer;
     add_repeating_timer_ms(100, repeating_timer_callback, NULL, &timer);
 

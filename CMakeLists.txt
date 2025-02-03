@@ -51,6 +51,7 @@ pico_enable_stdio_usb(tarefa_interrupcoes 1)
 target_link_libraries(tarefa_interrupcoes
         pico_stdlib
         hardware_pio
+        hardware_pwm
     )
 
 # Add the standard include files to the build
